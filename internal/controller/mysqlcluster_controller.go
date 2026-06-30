@@ -18,9 +18,12 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -31,12 +34,15 @@ import (
 // MysqlClusterReconciler reconciles a MysqlCluster object
 type MysqlClusterReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme     *runtime.Scheme
+	RestConfig *rest.Config
 }
 
 // +kubebuilder:rbac:groups=mysql.chennest.io,resources=mysqlclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=mysql.chennest.io,resources=mysqlclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=mysql.chennest.io,resources=mysqlclusters/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=pods/exec,verbs=create
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -98,6 +104,7 @@ func (r *MysqlClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 func (r *MysqlClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mysqlv1.MysqlCluster{}).
+		Owns(&corev1.Pod{}).
 		Named("mysqlcluster").
 		Complete(r)
 }
@@ -107,17 +114,46 @@ func (r *MysqlClusterReconciler) reconcileReplicas(ctx context.Context, m *mysql
 }
 
 func (r *MysqlClusterReconciler) reconcileMasterSlave(ctx context.Context, m *mysqlv1.MysqlCluster) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	// 等待所有 Pod Ready
+	replicas := m.Spec.Replicas + 1
+	readyCount := 0
+	for i := int32(0); i < replicas; i++ {
+		podName := fmt.Sprintf("%s-%d", m.Spec.ClusterName, i)
+		var pod corev1.Pod
+		if err := r.Get(ctx, client.ObjectKey{Namespace: m.Namespace, Name: podName}, &pod); err != nil {
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+				readyCount++
+				break
+			}
+		}
+	}
+	if readyCount < int(replicas) {
+		log.Info("等待所有 Pod 就绪", "ready", readyCount, "expected", replicas)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	// 检查从库复制状态，未配置则建主从
+	if m.Status.Phase != "Running" {
+		if err := r.setupReplication(ctx, m); err != nil {
+			log.Error(err, "建立主从失败")
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
+		m.Status.Phase = "Running"
+		m.Status.Ready = true
+		if err := r.Status().Update(ctx, m); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// 主从已建立，检查健康状态
+	if err := r.checkReplication(ctx, m); err != nil {
+		log.Error(err, "检查复制状态失败")
+	}
 	return ctrl.Result{}, nil
-}
-
-// syncGTID 采集每个节点的 GTID，写入 status，用于故障切换时选举
-func (r *MysqlClusterReconciler) syncGTID(ctx context.Context, cluster *mysqlv1.MysqlCluster) error {
-
-	return r.Status().Update(ctx, cluster)
-}
-
-// execSQL 在指定 Pod 里执行 SQL，返回结果字符串
-func (r *MysqlClusterReconciler) execSQL(ctx context.Context, podName, sql string) (string, error) {
-	// TODO: 通过 kubectl exec 或 client-go exec 调用 mysql -e
-	return "", nil
 }

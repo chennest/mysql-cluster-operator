@@ -179,8 +179,9 @@ func main() {
 	}
 
 	if err := (&controller.MysqlClusterReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		RestConfig: mgr.GetConfig(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "mysqlcluster")
 		os.Exit(1)

@@ -11,16 +11,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// initialize 初始化 MySQL 集群：创建 StatefulSet、两个 Service，执行 MySQL 主从初始化
+// initialize 初始化 MySQL 集群：创建 Service、PVC、Pod、ConfigMap，执行 MySQL 主从初始化
 func (r *MysqlClusterReconciler) initialize(ctx context.Context, m *mysqlv1.MysqlCluster) error {
 	log := log.FromContext(ctx)
 	log.Info("开始初始化 MySQL 集群", "cluster", m.Spec.ClusterName)
 
 	// 1. 创建两个 Service（mysql-primary、mysql-replica）
-	if _, err := utils.GetOrCreateService(ctx, r.Client, r.Scheme, m, m.Namespace, m.Spec.ClusterName, m.Spec.PrimaryServiceName, "primary"); err != nil {
+	if _, err := utils.GetOrCreateService(ctx, r.Client, r.Scheme, m, m.Namespace, m.Spec.ClusterName, m.Spec.PrimaryServiceName, "primary", false); err != nil {
 		return err
 	}
-	if _, err := utils.GetOrCreateService(ctx, r.Client, r.Scheme, m, m.Namespace, m.Spec.ClusterName, m.Spec.ReplicaServiceName, "replica"); err != nil {
+	if _, err := utils.GetOrCreateService(ctx, r.Client, r.Scheme, m, m.Namespace, m.Spec.ClusterName, m.Spec.ReplicaServiceName, "replica", false); err != nil {
 		return err
 	}
 
@@ -28,6 +28,9 @@ func (r *MysqlClusterReconciler) initialize(ctx context.Context, m *mysqlv1.Mysq
 	replicas := m.Spec.Replicas
 	if replicas < 1 {
 		return fmt.Errorf("副本数不能小于 1，当前副本数：%d", replicas)
+	}
+	if m.Spec.RootPasswordSecretRef == nil {
+		return fmt.Errorf("rootPasswordSecretRef 不能为空")
 	}
 
 	// 3. 创建 ConfigMap（my.cnf），每个 Pod 一份
@@ -40,9 +43,37 @@ func (r *MysqlClusterReconciler) initialize(ctx context.Context, m *mysqlv1.Mysq
 		}
 	}
 
-	// 4. 根据副本数，创建 StatefulSet（含 PVC）
+	// 4. 根据副本数，创建 PVC 和 Pod
+	for i := int32(0); i < replicas+1; i++ {
+		podName := fmt.Sprintf("%s-%d", m.Spec.ClusterName, i)
+		pvcName := fmt.Sprintf("data-%s-%d", m.Spec.ClusterName, i)
 
-	// 5. 建立主从关系
+		if _, err := utils.GetOrCreatePVC(ctx, r.Client, r.Scheme, m, m.Namespace, m.Spec.ClusterName,
+			pvcName, m.Spec.Storage.Size, m.Spec.Storage.StorageClassName); err != nil {
+			return err
+		}
+
+		role := "replica"
+		if i == 0 {
+			role = "primary"
+		}
+		if _, err := utils.GetOrCreatePod(ctx, r.Client, r.Scheme, m, utils.PodConfig{
+			Name:               podName,
+			Namespace:          m.Namespace,
+			ClusterName:        m.Spec.ClusterName,
+			Index:              i,
+			Role:               role,
+			Image:              m.Spec.Image,
+			PVCName:            pvcName,
+			ConfigMapName:      fmt.Sprintf("%s-%d-config", m.Spec.ClusterName, i),
+			RootPasswordSecret: m.Spec.RootPasswordSecretRef,
+			Resources:          m.Spec.Resources,
+		}); err != nil {
+			log.Error(err, "创建 Pod 失败，将在后续调谐中重试", "pod", podName)
+		}
+	}
+
+	// 5. 建立主从关系（由 reconcileMasterSlave 在后续调谐中处理）
 
 	return nil
 }

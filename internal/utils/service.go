@@ -12,8 +12,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// GetOrCreateService 构造并创建 Service，已存在则直接返回。owner 作为 OwnerReference 的控制器。
-func GetOrCreateService(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, namespace, clusterName, name, role string) (*corev1.Service, error) {
+// GetOrCreateService 构造并创建 Service，已存在则直接返回。headless 为 true 时创建无头 Service。
+func GetOrCreateService(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, namespace, clusterName, name, role string, headless bool) (*corev1.Service, error) {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -21,9 +21,15 @@ func GetOrCreateService(ctx context.Context, c client.Client, scheme *runtime.Sc
 			Labels:    map[string]string{"app": clusterName},
 		},
 		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{"app": clusterName, "role": role},
+			Selector: map[string]string{"app": clusterName},
 			Ports:    []corev1.ServicePort{{Port: 3306}},
 		},
+	}
+	if !headless {
+		svc.Spec.Selector["role"] = role
+	}
+	if headless {
+		svc.Spec.ClusterIP = "None"
 	}
 
 	existing := &corev1.Service{}
