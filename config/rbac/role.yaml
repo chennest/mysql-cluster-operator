@@ -1,0 +1,32 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - mysql.chennest.io
+  resources:
+  - mysqlclusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - mysql.chennest.io
+  resources:
+  - mysqlclusters/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - mysql.chennest.io
+  resources:
+  - mysqlclusters/status
+  verbs:
+  - get
+  - patch
+  - update
