@@ -60,6 +60,10 @@ type MysqlClusterSpec struct {
 	// 自定义 my.cnf（可选）
 	// +kubebuilder:validation:Optional
 	MysqlConfig string `json:"mysqlConfig,omitempty"`
+
+	// 就绪探针（默认 TCP 3306）
+	// +kubebuilder:validation:Optional
+	ReadinessProbe *corev1.Probe `json:"readinessProbe,omitempty"`
 }
 
 // StorageConfig 存储配置

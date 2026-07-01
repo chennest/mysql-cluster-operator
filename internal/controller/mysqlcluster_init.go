@@ -3,11 +3,13 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
-
 	mysqlv1 "mysql-cluster-operator/api/v1"
 	"mysql-cluster-operator/internal/utils"
+	"strings"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -68,12 +70,49 @@ func (r *MysqlClusterReconciler) initialize(ctx context.Context, m *mysqlv1.Mysq
 			ConfigMapName:      fmt.Sprintf("%s-%d-config", m.Spec.ClusterName, i),
 			RootPasswordSecret: m.Spec.RootPasswordSecretRef,
 			Resources:          m.Spec.Resources,
+			ReadinessProbe:     m.Spec.ReadinessProbe,
 		}); err != nil {
 			log.Error(err, "创建 Pod 失败，将在后续调谐中重试", "pod", podName)
 		}
 	}
 
-	// 5. 建立主从关系（由 reconcileMasterSlave 在后续调谐中处理）
+	// 5. 等待 Pod Ready 并建立主从关系
+	if err := r.waitForPodsReady(ctx, m.Namespace, m.Spec.ClusterName, replicas+1, 2*time.Minute); err != nil {
+		return fmt.Errorf("等待 Pod 就绪超时: %w", err)
+	}
+	if err := r.setupReplication(ctx, m); err != nil {
+		return fmt.Errorf("建立主从失败: %w", err)
+	}
 
 	return nil
+}
+
+// waitForPodsReady 等待所有 Pod 就绪
+func (r *MysqlClusterReconciler) waitForPodsReady(ctx context.Context, namespace, clusterName string, expected int32, timeout time.Duration) error {
+	log := log.FromContext(ctx)
+	deadline := time.Now().Add(timeout)
+
+	for time.Now().Before(deadline) {
+		readyCount := int32(0)
+		for i := int32(0); i < expected; i++ {
+			podName := fmt.Sprintf("%s-%d", clusterName, i)
+			var pod corev1.Pod
+			if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: podName}, &pod); err != nil {
+				continue
+			}
+			for _, cond := range pod.Status.Conditions {
+				if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+					readyCount++
+					break
+				}
+			}
+		}
+		if readyCount >= expected {
+			log.Info("所有 Pod 已就绪", "count", readyCount)
+			return nil
+		}
+		log.Info("等待 Pod 就绪", "ready", readyCount, "expected", expected)
+		time.Sleep(5 * time.Second)
+	}
+	return fmt.Errorf("超时：期待 %d 个 Pod 就绪", expected)
 }

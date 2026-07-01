@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -107,53 +106,4 @@ func (r *MysqlClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Pod{}).
 		Named("mysqlcluster").
 		Complete(r)
-}
-
-func (r *MysqlClusterReconciler) reconcileReplicas(ctx context.Context, m *mysqlv1.MysqlCluster) (ctrl.Result, error) {
-	return ctrl.Result{}, nil
-}
-
-func (r *MysqlClusterReconciler) reconcileMasterSlave(ctx context.Context, m *mysqlv1.MysqlCluster) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
-	// 等待所有 Pod Ready
-	replicas := m.Spec.Replicas + 1
-	readyCount := 0
-	for i := int32(0); i < replicas; i++ {
-		podName := fmt.Sprintf("%s-%d", m.Spec.ClusterName, i)
-		var pod corev1.Pod
-		if err := r.Get(ctx, client.ObjectKey{Namespace: m.Namespace, Name: podName}, &pod); err != nil {
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-		}
-		for _, cond := range pod.Status.Conditions {
-			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
-				readyCount++
-				break
-			}
-		}
-	}
-	if readyCount < int(replicas) {
-		log.Info("等待所有 Pod 就绪", "ready", readyCount, "expected", replicas)
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
-
-	// 检查从库复制状态，未配置则建主从
-	if m.Status.Phase != "Running" {
-		if err := r.setupReplication(ctx, m); err != nil {
-			log.Error(err, "建立主从失败")
-			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-		}
-		m.Status.Phase = "Running"
-		m.Status.Ready = true
-		if err := r.Status().Update(ctx, m); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
-	}
-
-	// 主从已建立，检查健康状态
-	if err := r.checkReplication(ctx, m); err != nil {
-		log.Error(err, "检查复制状态失败")
-	}
-	return ctrl.Result{}, nil
 }

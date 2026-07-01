@@ -26,6 +26,7 @@ type PodConfig struct {
 	ConfigMapName      string
 	RootPasswordSecret *corev1.LocalObjectReference
 	Resources          corev1.ResourceRequirements
+	ReadinessProbe     *corev1.Probe
 }
 
 // GetOrCreatePod 构造并创建 MySQL Pod，已存在则直接返回
@@ -61,15 +62,7 @@ func GetOrCreatePod(ctx context.Context, c client.Client, scheme *runtime.Scheme
 							SubPath:   "my.cnf",
 						},
 					},
-					ReadinessProbe: &corev1.Probe{
-						ProbeHandler: corev1.ProbeHandler{
-							TCPSocket: &corev1.TCPSocketAction{
-								Port: intstr.FromInt32(3306),
-							},
-						},
-						InitialDelaySeconds: 30,
-						PeriodSeconds:       10,
-					},
+					ReadinessProbe: readinessProbeOrDefault(cfg.ReadinessProbe),
 				},
 			},
 			Volumes: []corev1.Volume{
@@ -130,4 +123,20 @@ func buildPodEnv(cfg PodConfig) []corev1.EnvVar {
 		})
 	}
 	return envs
+}
+
+// readinessProbeOrDefault 返回用户自定义探针，为空时使用默认 TCP 3306 探针
+func readinessProbeOrDefault(p *corev1.Probe) *corev1.Probe {
+	if p != nil {
+		return p
+	}
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			TCPSocket: &corev1.TCPSocketAction{
+				Port: intstr.FromInt32(3306),
+			},
+		},
+		InitialDelaySeconds: 30,
+		PeriodSeconds:       10,
+	}
 }
