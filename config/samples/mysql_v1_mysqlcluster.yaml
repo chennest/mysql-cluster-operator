@@ -6,4 +6,34 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: mysqlcluster-sample
 spec:
-  # TODO(user): Add fields here
+  clusterName: my-mysql
+  replicas: 2
+  image: mysql:8.0
+  storage:
+    size: 10Gi
+    storageClassName: local-path
+  primaryServiceName: my-mysql-primary
+  replicaServiceName: my-mysql-replica
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+  rootPasswordSecretRef:
+    name: mysql-root-pass
+  # 可选：自定义就绪探针
+  # readinessProbe:
+  #   tcpSocket:
+  #     port: 3306
+  #   initialDelaySeconds: 30
+  #   periodSeconds: 10
+  # 可选：自定义 my.cnf（使用 {server-id} 占位符）
+  # mysqlConfig: |
+  #   [mysqld]
+  #   server-id={server-id}
+  #   log-bin=mysql-bin
+  #   binlog-format=row
+  #   gtid-mode=ON
+  #   enforce-gtid-consistency=ON
